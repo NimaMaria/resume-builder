@@ -8,5 +8,15 @@ export default function PdfPreview({ pdfUrl }) {
     );
   }
 
-  return <iframe title="resume-preview" className="previewFrame" src={pdfUrl} />;
+  // Optional: hide toolbar. You can remove the #... part if you want toolbar.
+  const src = `${pdfUrl}#toolbar=0&navpanes=0&scrollbar=0`;
+
+  return (
+    <iframe
+      title="resume-preview"
+      className="previewFrame"
+      src={src}
+      loading="lazy"
+    />
+  );
 }

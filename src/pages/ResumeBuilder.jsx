@@ -4,11 +4,9 @@ import UploadBox from "../components/UploadBox";
 import JobInput from "../components/JobInput";
 import MatchPanel from "../components/MatchPanel";
 import PdfPreview from "../components/PdfPreview";
-import TemplateModal from "../components/TemplatePicker";
 import WarningModal from "../components/WarningModal";
 
 export default function ResumeBuilder() {
-
   // Upload
   const [file, setFile] = useState(null);
   const [extracting, setExtracting] = useState(false);
@@ -20,11 +18,6 @@ export default function ResumeBuilder() {
   const [jobMode, setJobMode] = useState("title");
   const [jobTitle, setJobTitle] = useState("");
   const [jobDesc, setJobDesc] = useState("");
-
-  // Template
-  const [templateChosen, setTemplateChosen] = useState(false);
-  const [templateName, setTemplateName] = useState("");
-  const [openTemplate, setOpenTemplate] = useState(false);
 
   // Match results
   const [matching, setMatching] = useState(false);
@@ -47,13 +40,11 @@ export default function ResumeBuilder() {
     !!resumeText &&
     !isScanned &&
     !!jobText &&
-    templateChosen &&
     !extracting &&
     !matching &&
     !generating;
 
   async function handleExtract(selectedFile) {
-
     setFile(selectedFile);
     setExtractError("");
     setIsScanned(false);
@@ -64,52 +55,58 @@ export default function ResumeBuilder() {
     setMissingKeywords([]);
     setMatchNote("");
 
+    if (!selectedFile) {
+      setExtractError("Please select a PDF file.");
+      return;
+    }
+
     setExtracting(true);
 
     try {
+      const fd = new FormData();
+      fd.append("file", selectedFile);
 
-      // Demo extraction (temporary)
-      await new Promise((r) => setTimeout(r, 500));
+      const res = await fetch("http://127.0.0.1:5000/api/extract", {
+        method: "POST",
+        body: fd,
+      });
 
-      const demoText =
-        "Skills: Python, Flask, HTML, CSS, JavaScript, React, SQL, Git\nProjects: Resume Builder\nEducation: B.Tech";
+      const data = await res.json().catch(() => ({}));
 
-      setResumeText(demoText);
+      if (!res.ok) {
+        setExtractError(data?.error || "Extraction failed.");
+        return;
+      }
 
-      const scanned = selectedFile?.name?.toLowerCase().includes("scanned");
+      const text = data?.text || "";
+      const scanned = !!data?.is_scanned || text.trim().length === 0;
+
+      setResumeText(text);
       setIsScanned(scanned);
 
       if (scanned) {
         setExtractError(
-          "This looks like a scanned PDF. Upload a proper text-based PDF."
+          "No selectable text found. This may be a scanned PDF. Upload a proper text-based PDF."
         );
       }
-
-    } catch {
-      setExtractError("Extraction failed.");
+    } catch (e) {
+      setExtractError("Extraction failed. Check backend is running.");
     } finally {
       setExtracting(false);
     }
   }
 
   async function runMatch() {
-
     setMatching(true);
 
     try {
-
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 200));
 
       const jobKeywords = extractKeywords(jobText);
       const resumeKeywords = new Set(extractKeywords(resumeText));
 
-      const present = jobKeywords.filter((k) =>
-        resumeKeywords.has(k)
-      );
-
-      const missing = jobKeywords.filter((k) =>
-        !resumeKeywords.has(k)
-      );
+      const present = jobKeywords.filter((k) => resumeKeywords.has(k));
+      const missing = jobKeywords.filter((k) => !resumeKeywords.has(k));
 
       const percent =
         jobKeywords.length === 0
@@ -127,19 +124,17 @@ export default function ResumeBuilder() {
       }
 
       return percent;
-
     } finally {
       setMatching(false);
     }
   }
 
   async function generateResume({ force }) {
-
     setGenerating(true);
+    setExtractError("");
     setPdfUrl("");
 
     try {
-
       const percent = await runMatch();
 
       if (percent < 40 && !force) {
@@ -147,72 +142,73 @@ export default function ResumeBuilder() {
         return;
       }
 
-      await new Promise((r) => setTimeout(r, 600));
-
-      const html = makeDemoHtmlResume({
-        name: "Generated Resume",
-        templateName,
-        matchPercent: percent
+      const res = await fetch("http://127.0.0.1:5000/api/generate-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resumeText, jobText }),
       });
 
-      const blob = new Blob([html], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setExtractError(data?.error || "PDF generation failed.");
+        return;
+      }
+
+      // Edge-friendly stable URL served by backend
+      const url = data?.pdf_url || "";
+      if (!url) {
+        setExtractError("PDF generated, but pdf_url is missing.");
+        return;
+      }
 
       setPdfUrl(url);
-
+    } catch (e) {
+      setExtractError("Resume generation failed. Check backend is running.");
     } finally {
       setGenerating(false);
     }
   }
 
-  function downloadFile() {
-
+  function downloadPDF() {
     if (!pdfUrl) return;
 
     const a = document.createElement("a");
     a.href = pdfUrl;
-    a.download = "resume.html";
+    a.download = "resume.pdf";
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
+  }
+
+  function viewPDF() {
+    if (!pdfUrl) return;
+    window.open(pdfUrl, "_blank", "noopener,noreferrer");
   }
 
   return (
-
     <div className="app">
-
-      {/* NAVBAR */}
       <Navbar />
 
       <main className="container">
-
         <div className="hero">
           <h1>Resume Builder</h1>
-          <p>Upload resume → choose template → generate</p>
+          <p>Upload resume → add job description → generate PDF (Groq + pdflatex)</p>
         </div>
 
         {/* Upload */}
         <div className="card">
-
           <div className="cardHeader">
             <h3>Upload Resume PDF</h3>
           </div>
 
-          <UploadBox
-            file={file}
-            extracting={extracting}
-            onExtract={handleExtract}
-          />
+          <UploadBox file={file} extracting={extracting} onExtract={handleExtract} />
 
-          {extractError &&
-            <div className="alert danger">
-              {extractError}
-            </div>
-          }
-
+          {extractError && <div className="alert danger">{extractError}</div>}
         </div>
 
         {/* Job input */}
         <div className="card">
-
           <div className="cardHeader">
             <h3>Job Title / Description</h3>
           </div>
@@ -225,66 +221,31 @@ export default function ResumeBuilder() {
             jobDesc={jobDesc}
             setJobDesc={setJobDesc}
           />
-
-        </div>
-
-        {/* Template */}
-        <div className="card">
-
-          <div className="cardHeader">
-            <h3>Template</h3>
-          </div>
-
-          <div className="row">
-
-            <button
-              className="btn outline"
-              onClick={() => setOpenTemplate(true)}
-            >
-              Choose Template
-            </button>
-
-            {templateChosen
-              ? <div className="pill">
-                  Selected: {templateName}
-                </div>
-              : <div className="muted">
-                  No template selected
-                </div>
-            }
-
-          </div>
-
         </div>
 
         {/* Generate */}
         <div className="generateWrap">
-
           <button
             className={`btn primary big ${!canGenerate ? "disabledBlur" : ""}`}
             disabled={!canGenerate}
             onClick={() => generateResume({ force: false })}
           >
-            {generating ? "Generating..." : "Generate Resume"}
+            {generating ? "Generating..." : "Generate PDF Resume"}
           </button>
-
         </div>
 
         {/* Match */}
-        {matchPercent !== null &&
-
+        {matchPercent !== null && (
           <MatchPanel
             matchPercent={matchPercent}
             presentKeywords={presentKeywords}
             missingKeywords={missingKeywords}
             note={matchNote}
           />
+        )}
 
-        }
-
-        {/* Preview */}
+        {/* Preview (PDF) */}
         <div className="card">
-
           <div className="cardHeader">
             <h3>Preview</h3>
           </div>
@@ -292,36 +253,15 @@ export default function ResumeBuilder() {
           <PdfPreview pdfUrl={pdfUrl} />
 
           <div className="exportRow">
-
-            <button
-              className="btn secondary"
-              disabled={!pdfUrl}
-            >
+            <button className="btn secondary" disabled={!pdfUrl} onClick={viewPDF}>
               View PDF
             </button>
 
-            <button
-              className="btn secondary"
-              disabled={!pdfUrl}
-              onClick={downloadFile}
-            >
+            <button className="btn secondary" disabled={!pdfUrl} onClick={downloadPDF}>
               Download PDF
             </button>
-
           </div>
-
         </div>
-
-        {/* Template modal */}
-        <TemplateModal
-          open={openTemplate}
-          onClose={() => setOpenTemplate(false)}
-          onSelect={(name) => {
-            setTemplateChosen(true);
-            setTemplateName(name);
-            setOpenTemplate(false);
-          }}
-        />
 
         {/* Warning modal */}
         <WarningModal
@@ -337,13 +277,9 @@ export default function ResumeBuilder() {
             alert("Resume Analyzer coming soon");
           }}
         />
-
       </main>
 
-      <footer className="footer">
-        RollNavigator Resume Builder UI Ready
-      </footer>
-
+      <footer className="footer">RoleNavigator (Groq → LaTeX → PDF) Ready</footer>
     </div>
   );
 }
@@ -351,25 +287,30 @@ export default function ResumeBuilder() {
 /* helpers */
 
 function extractKeywords(text) {
+  if (!text) return [];
 
-  return text
+  const stop = new Set([
+    "with","from","that","this","have","has","had","will","your","you","the","and","for","are",
+    "was","were","but","not","into","over","than","then","also","only","able","using","use",
+    "job","role","resume","work","experience","skills","education"
+  ]);
+
+  const words = text
     .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 3)
-    .slice(0, 40);
+    .filter(Boolean)
+    .filter((w) => w.length >= 3)
+    .filter((w) => !stop.has(w));
 
-}
+  const uniq = [];
+  const seen = new Set();
+  for (const w of words) {
+    if (!seen.has(w)) {
+      seen.add(w);
+      uniq.push(w);
+    }
+  }
 
-function makeDemoHtmlResume({ name, templateName, matchPercent }) {
-
-  return `
-<html>
-<body>
-<h1>${name}</h1>
-<p>Template: ${templateName}</p>
-<p>Match: ${matchPercent}%</p>
-</body>
-</html>
-`;
-
+  return uniq.slice(0, 60);
 }
