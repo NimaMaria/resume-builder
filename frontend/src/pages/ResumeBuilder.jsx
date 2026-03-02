@@ -6,6 +6,8 @@ import MatchPanel from "../components/MatchPanel";
 import PdfPreview from "../components/PdfPreview";
 import WarningModal from "../components/WarningModal";
 
+const API = "http://127.0.0.1:5000";
+
 export default function ResumeBuilder() {
   // Upload
   const [file, setFile] = useState(null);
@@ -19,6 +21,11 @@ export default function ResumeBuilder() {
   const [jobTitle, setJobTitle] = useState("");
   const [jobDesc, setJobDesc] = useState("");
 
+  // Expanded job info (from backend)
+  const [expandedJobText, setExpandedJobText] = useState("");
+  const [jobKeywords, setJobKeywords] = useState([]); // filtered keywords present in resume
+  const [jobExplain, setJobExplain] = useState("");
+
   // Match results
   const [matching, setMatching] = useState(false);
   const [matchPercent, setMatchPercent] = useState(null);
@@ -31,7 +38,7 @@ export default function ResumeBuilder() {
   const [pdfUrl, setPdfUrl] = useState("");
   const [showLowMatch, setShowLowMatch] = useState(false);
 
-  const jobText = useMemo(() => {
+  const jobTextRaw = useMemo(() => {
     return jobMode === "title" ? jobTitle.trim() : jobDesc.trim();
   }, [jobMode, jobTitle, jobDesc]);
 
@@ -39,10 +46,23 @@ export default function ResumeBuilder() {
     !!file &&
     !!resumeText &&
     !isScanned &&
-    !!jobText &&
+    !!jobTextRaw &&
     !extracting &&
     !matching &&
     !generating;
+
+  function resetMatch() {
+    setMatchPercent(null);
+    setPresentKeywords([]);
+    setMissingKeywords([]);
+    setMatchNote("");
+  }
+
+  function resetJobExpansion() {
+    setExpandedJobText("");
+    setJobKeywords([]);
+    setJobExplain("");
+  }
 
   async function handleExtract(selectedFile) {
     setFile(selectedFile);
@@ -50,10 +70,8 @@ export default function ResumeBuilder() {
     setIsScanned(false);
     setResumeText("");
     setPdfUrl("");
-    setMatchPercent(null);
-    setPresentKeywords([]);
-    setMissingKeywords([]);
-    setMatchNote("");
+    resetMatch();
+    resetJobExpansion();
 
     if (!selectedFile) {
       setExtractError("Please select a PDF file.");
@@ -66,7 +84,7 @@ export default function ResumeBuilder() {
       const fd = new FormData();
       fd.append("file", selectedFile);
 
-      const res = await fetch("http://127.0.0.1:5000/api/extract", {
+      const res = await fetch(`${API}/api/extract`, {
         method: "POST",
         body: fd,
       });
@@ -96,34 +114,109 @@ export default function ResumeBuilder() {
     }
   }
 
+  // ✅ IMPORTANT FIX: /api/expand-job needs resumeText too
+  async function ensureExpandedJobText() {
+    // Determine input text based on mode
+    const inputText = jobMode === "title" ? jobTitle.trim() : jobDesc.trim();
+    if (!inputText) {
+      resetJobExpansion();
+      return { jobTextToUse: "", keywords: [], matchPercent: null, present: [], missing: [] };
+    }
+
+    // if resume isn't ready yet, just return input and skip network
+    if (!resumeText.trim()) {
+      setExpandedJobText(inputText);
+      setJobExplain("Using job text directly (resume not extracted yet).");
+      return { jobTextToUse: inputText, keywords: [], matchPercent: null, present: [], missing: [] };
+    }
+
+    // If we've already generated expansion for this exact input and resume hasn't changed,
+    // reuse it. (We don't track resume changes, so this is basic caching.)
+    if (expandedJobText && expandedJobText.includes(inputText)) {
+      return {
+        jobTextToUse: expandedJobText.trim(),
+        keywords: jobKeywords,
+        matchPercent,
+        presentKeywords,
+        missingKeywords,
+      };
+    }
+
+    // Call backend for analysis on both titles and descriptions
+    try {
+      const res = await fetch(`${API}/api/expand-job`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobText: inputText, resumeText }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setExpandedJobText(inputText);
+        setJobExplain("Using job text directly (expand failed).");
+        setJobKeywords([]);
+        return { jobTextToUse: inputText, keywords: [], matchPercent: null, present: [], missing: [] };
+      }
+
+      const expanded = (data?.expanded_job_text || inputText).trim();
+      const mode = data?.job_mode || jobMode;
+      const kw = Array.isArray(data?.job_keywords) ? data.job_keywords : [];
+      const percent = typeof data?.match_percent === "number" ? data.match_percent : null;
+      const present = Array.isArray(data?.present_keywords) ? data.present_keywords : [];
+      const missing = Array.isArray(data?.missing_keywords) ? data.missing_keywords : [];
+
+      setExpandedJobText(expanded);
+      if (kw.length) setJobKeywords(kw);
+      if (percent !== null) setMatchPercent(percent);
+      setPresentKeywords(present);
+      setMissingKeywords(missing);
+
+      if (mode === "title") {
+        if (kw.length > 0) {
+          setJobExplain(
+            `Using expanded job text (filtered to resume). Matched keywords: ${kw.join(", ")}`
+          );
+        } else {
+          setJobExplain(
+            "Expanded job title, but none of the typical keywords appear in the uploaded resume (match may be low)."
+          );
+        }
+      } else {
+        setJobExplain("Using job description (no expansion needed).");
+      }
+
+      return { jobTextToUse: expanded, keywords: kw, matchPercent: percent, present, missing };
+    } catch (e) {
+      setExpandedJobText(inputText);
+      setJobExplain("Using job text directly (expand error).");
+      setJobKeywords([]);
+      return { jobTextToUse: inputText, keywords: [], matchPercent: null, present: [], missing: [] };
+    }
+  }
+
+  // ✅ Match via backend LLM analysis. ensureExpandedJobText will call
+  // /api/expand-job and return both keywords and an overall match_percent.
   async function runMatch() {
     setMatching(true);
 
     try {
-      await new Promise((r) => setTimeout(r, 200));
+      // Always rely on the backend to analyse and score the match.
+      const r = await ensureExpandedJobText();
+      // ensureExpandedJobText already updates matchPercent/present/missing if available
+      if (r.matchPercent !== undefined && r.matchPercent !== null) {
+        setMatchPercent(r.matchPercent);
+      }
+      if (Array.isArray(r.present)) setPresentKeywords(r.present);
+      if (Array.isArray(r.missing)) setMissingKeywords(r.missing);
 
-      const jobKeywords = extractKeywords(jobText);
-      const resumeKeywords = new Set(extractKeywords(resumeText));
-
-      const present = jobKeywords.filter((k) => resumeKeywords.has(k));
-      const missing = jobKeywords.filter((k) => !resumeKeywords.has(k));
-
-      const percent =
-        jobKeywords.length === 0
-          ? 0
-          : Math.round((present.length / jobKeywords.length) * 100);
-
-      setMatchPercent(percent);
-      setPresentKeywords(present);
-      setMissingKeywords(missing);
-
+      const percent = r.matchPercent != null ? r.matchPercent : matchPercent;
       if (percent < 40) {
         setMatchNote("Low match. Resume not strongly aligned.");
       } else {
         setMatchNote("Good match. Ready to generate.");
       }
 
-      return percent;
+      return { percent };
     } finally {
       setMatching(false);
     }
@@ -135,17 +228,23 @@ export default function ResumeBuilder() {
     setPdfUrl("");
 
     try {
-      const percent = await runMatch();
+      const { percent } = await runMatch();
 
       if (percent < 40 && !force) {
         setShowLowMatch(true);
         return;
       }
 
-      const res = await fetch("http://127.0.0.1:5000/api/generate-pdf", {
+      // ✅ BEST PRACTICE:
+      // Send ORIGINAL jobTextRaw to backend.
+      // Backend already expands title-mode + filters safely.
+      const res = await fetch(`${API}/api/generate-pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resumeText, jobText }),
+        body: JSON.stringify({
+          resumeText,
+          jobText: jobTextRaw, // ✅ raw input
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -155,11 +254,26 @@ export default function ResumeBuilder() {
         return;
       }
 
-      // Edge-friendly stable URL served by backend
       const url = data?.pdf_url || "";
       if (!url) {
         setExtractError("PDF generated, but pdf_url is missing.");
         return;
+      }
+
+      // If backend gives expanded_job_text (title mode), show it
+      if (jobMode === "title" && data?.expanded_job_text) {
+        setExpandedJobText(data.expanded_job_text);
+        const kw = Array.isArray(data?.job_keywords) ? data.job_keywords : [];
+        setJobKeywords(kw);
+        if (kw.length > 0) {
+          setJobExplain(
+            `Using expanded job title (filtered to resume). Matched keywords: ${kw.join(", ")}`
+          );
+        } else {
+          setJobExplain(
+            "Expanded job title, but none of the typical keywords appear in the uploaded resume."
+          );
+        }
       }
 
       setPdfUrl(url);
@@ -193,7 +307,7 @@ export default function ResumeBuilder() {
       <main className="container">
         <div className="hero">
           <h1>Resume Builder</h1>
-          <p>Upload resume → add job description → generate PDF (Groq + pdflatex)</p>
+          <p>Upload resume → add job title/description → generate PDF (Groq + pdflatex)</p>
         </div>
 
         {/* Upload */}
@@ -215,12 +329,29 @@ export default function ResumeBuilder() {
 
           <JobInput
             mode={jobMode}
-            setMode={setJobMode}
+            setMode={(m) => {
+              setJobMode(m);
+              resetJobExpansion();
+              resetMatch();
+            }}
             jobTitle={jobTitle}
-            setJobTitle={setJobTitle}
+            setJobTitle={(v) => {
+              setJobTitle(v);
+              resetJobExpansion();
+              resetMatch();
+            }}
             jobDesc={jobDesc}
-            setJobDesc={setJobDesc}
+            setJobDesc={(v) => {
+              setJobDesc(v);
+              resetMatch();
+            }}
           />
+
+          {jobMode === "title" && jobExplain && (
+            <div className="muted" style={{ marginTop: 8 }}>
+              {jobExplain}
+            </div>
+          )}
         </div>
 
         {/* Generate */}
@@ -312,5 +443,5 @@ function extractKeywords(text) {
     }
   }
 
-  return uniq.slice(0, 60);
+  return uniq.slice(0, 80);
 }

@@ -1,35 +1,45 @@
-\documentclass[11pt]{article}
+\documentclass[10pt]{article}
 
-\usepackage[margin=0.75in]{geometry}
+% ---- Page setup (compact; 1-page preference but can go to page 2 if needed) ----
+\usepackage[margin=0.65in]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-\usepackage[hidelinks]{hyperref}
 \usepackage{tabularx}
 \usepackage{enumitem}
 \usepackage{titlesec}
 
+% ---- Clickable links + nice URL wrapping (NEW) ----
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+\urlstyle{same}
+
 \pagestyle{empty}
 \setlength{\parindent}{0pt}
+\setlength{\tabcolsep}{0pt}
 
+% ---- Section style (heading + thin rule) ----
 \titleformat{\section}{\large\bfseries}{}{0pt}{}
-\titlespacing*{\section}{0pt}{8pt}{6pt}
+\titlespacing*{\section}{0pt}{6pt}{4pt}
 
 \newcommand{\sectionrule}{\vspace{-6pt}\hrule height 0.4pt \vspace{6pt}}
 
+% ---- One-line entry with right aligned date/location ----
 \newcommand{\resumeEntry}[2]{
   \begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l r}
     \textbf{#1} & #2 \\
   \end{tabular*}
 }
 
+% ---- Sub-line italic (role/degree + dates) ----
 \newcommand{\resumeSub}[2]{
   \begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l r}
     \textit{#1} & \textit{#2} \\
   \end{tabular*}
 }
 
+% ---- Bullet list spacing ----
 \newcommand{\resumeBullets}[1]{
-  \begin{itemize}[leftmargin=16pt, itemsep=2pt, topsep=2pt]
+  \begin{itemize}[leftmargin=16pt, itemsep=1pt, topsep=1pt]
     #1
   \end{itemize}
 }
@@ -39,39 +49,31 @@
 % ===== Header =====
 \begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l r}
   {\LARGE \textbf{<<NAME>>}} &
-  \begin{tabular}{r}
-    Email: <<EMAIL>>\\
-    Mobile: <<PHONE>>
+  \begin{tabular}{@{}r@{}}
+  <<CONTACT_LINES>>
   \end{tabular}
-\end{tabular*}
-
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l r}
-  Portfolio: <<PORTFOLIO>> & \\
-  Github: <<GITHUB>> &
 \end{tabular*}
 
 \vspace{6pt}
 \hrule height 0.4pt
 \vspace{10pt}
 
+% ===== Summary (only shows if backend inserts content) =====
+<<SUMMARY_SECTION>>
+
 % ===== Education =====
-\section{EDUCATION}
-\sectionrule
-<<EDUCATION_BLOCK>>
+<<EDU_SECTION>>
 
 % ===== Skills Summary =====
-\section{SKILLS SUMMARY}
-\sectionrule
-<<SKILLS_BLOCK>>
+<<SKILLS_SECTION>>
 
 % ===== Experience =====
-\section{EXPERIENCE}
-\sectionrule
-<<EXPERIENCE_BLOCK>>
+<<EXP_SECTION>>
 
 % ===== Projects =====
-\section{PROJECTS}
-\sectionrule
-<<PROJECTS_BLOCK>>
+<<PROJ_SECTION>>
+
+% ===== Achievements / Certifications / Extras =====
+<<EXTRA_SECTIONS>>
 
 \end{document}
