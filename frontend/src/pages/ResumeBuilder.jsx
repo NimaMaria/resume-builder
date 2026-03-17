@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import Navbar from "../components/Navbar";
+
 import UploadBox from "../components/UploadBox";
 import JobInput from "../components/JobInput";
 import MatchPanel from "../components/MatchPanel";
@@ -302,12 +302,12 @@ export default function ResumeBuilder() {
 
   return (
     <div className="app">
-      <Navbar />
+
 
       <main className="container">
         <div className="hero">
-          <h1>Resume Builder</h1>
-          <p>Upload resume → add job title/description → generate PDF (Groq + pdflatex)</p>
+          <h1>Convert your Resume into a Career Catalyst</h1>
+          <p>AI-powered precision that aligns your skills with any job description in seconds.</p>
         </div>
 
         {/* Upload */}
@@ -410,7 +410,7 @@ export default function ResumeBuilder() {
         />
       </main>
 
-      <footer className="footer">RoleNavigator (Groq → LaTeX → PDF) Ready</footer>
+      <footer className="footer">Career Catalyst | AI Resume Alignment Ready</footer>
     </div>
   );
 }
@@ -421,9 +421,9 @@ function extractKeywords(text) {
   if (!text) return [];
 
   const stop = new Set([
-    "with","from","that","this","have","has","had","will","your","you","the","and","for","are",
-    "was","were","but","not","into","over","than","then","also","only","able","using","use",
-    "job","role","resume","work","experience","skills","education"
+    "with", "from", "that", "this", "have", "has", "had", "will", "your", "you", "the", "and", "for", "are",
+    "was", "were", "but", "not", "into", "over", "than", "then", "also", "only", "able", "using", "use",
+    "job", "role", "resume", "work", "experience", "skills", "education"
   ]);
 
   const words = text
