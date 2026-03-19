@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 
 import UploadBox from "../components/UploadBox";
 import JobInput from "../components/JobInput";
-import MatchPanel from "../components/MatchPanel";
+import MatchModal from "../components/MatchModal";
 import PdfPreview from "../components/PdfPreview";
-import WarningModal from "../components/WarningModal";
+import AnalysisPanel from "../components/AnalysisPanel";
 
 export default function ResumeBuilder() {
   // Upload
@@ -30,6 +30,10 @@ export default function ResumeBuilder() {
   const [generating, setGenerating] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
   const [showLowMatch, setShowLowMatch] = useState(false);
+
+  // Analysis
+  const [analysis, setAnalysis] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   const jobText = useMemo(() => {
     return jobMode === "title" ? jobTitle.trim() : jobDesc.trim();
@@ -97,75 +101,112 @@ export default function ResumeBuilder() {
   }
 
   async function runMatch() {
+    if (!resumeText || !jobText) return 0;
     setMatching(true);
 
     try {
-      await new Promise((r) => setTimeout(r, 200));
-
-      const jobKeywords = extractKeywords(jobText);
-      const resumeKeywords = new Set(extractKeywords(resumeText));
-
-      const present = jobKeywords.filter((k) => resumeKeywords.has(k));
-      const missing = jobKeywords.filter((k) => !resumeKeywords.has(k));
-
-      const percent =
-        jobKeywords.length === 0
-          ? 0
-          : Math.round((present.length / jobKeywords.length) * 100);
-
-      setMatchPercent(percent);
-      setPresentKeywords(present);
-      setMissingKeywords(missing);
-
-      if (percent < 40) {
-        setMatchNote("Low match. Resume not strongly aligned.");
-      } else {
-        setMatchNote("Good match. Ready to generate.");
-      }
-
-      return percent;
-    } finally {
-      setMatching(false);
-    }
-  }
-
-  async function generateResume({ force }) {
-    setGenerating(true);
-    setExtractError("");
-    setPdfUrl("");
-
-    try {
-      const percent = await runMatch();
-
-      if (percent < 40 && !force) {
-        setShowLowMatch(true);
-        return;
-      }
-
-      const res = await fetch("http://127.0.0.1:5000/api/generate-pdf", {
+      const res = await fetch("http://127.0.0.1:5000/api/expand-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resumeText, jobText }),
       });
 
       const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Match failed");
 
-      if (!res.ok) {
-        setExtractError(data?.error || "PDF generation failed.");
-        return;
+      const percent = data?.match_percent ?? 0;
+      setMatchPercent(percent);
+      setPresentKeywords(data?.present_keywords || []);
+      setMissingKeywords(data?.missing_keywords || []);
+
+      if (percent < 40) {
+        setMatchNote("Low match. Resume not strongly aligned.");
+      } else if (percent < 70) {
+        setMatchNote("Moderate match. Could be improved.");
+      } else {
+        setMatchNote("Strong match! Ready to generate.");
       }
 
-      // Edge-friendly stable URL served by backend
-      const url = data?.pdf_url || "";
-      if (!url) {
-        setExtractError("PDF generated, but pdf_url is missing.");
-        return;
-      }
-
-      setPdfUrl(url);
+      return percent;
     } catch (e) {
-      setExtractError("Resume generation failed. Check backend is running.");
+      console.error("Match error:", e);
+      return 0;
     } finally {
+      setMatching(false);
+    }
+  }
+
+  async function runContentAnalysis() {
+    if (!resumeText) return;
+    setAnalyzing(true);
+    try {
+      const res = await fetch("http://127.0.0.1:5000/api/analyze-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resumeText, jobText }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setAnalysis(data);
+      }
+    } catch (e) {
+      console.error("Analysis failed", e);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function generateResume({ force }) {
+    setExtractError("");
+    
+    // 1. Direct generation if forced
+    if (force) {
+      setGenerating(true);
+      try {
+        const res = await fetch("http://127.0.0.1:5000/api/generate-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resumeText, jobText }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setExtractError(data?.error || "PDF generation failed.");
+          return;
+        }
+
+        const url = data?.pdf_url || "";
+        if (!url) {
+          setExtractError("PDF generated, but pdf_url is missing.");
+          return;
+        }
+
+        setPdfUrl(url);
+      } catch (e) {
+        setExtractError("Resume generation failed. Check backend is running.");
+      } finally {
+        setGenerating(false);
+      }
+      return;
+    }
+
+    // 2. Initial check flow
+    setGenerating(true);
+    setPdfUrl("");
+
+    try {
+      const percent = await runMatch();
+
+      if (percent > 70) {
+        // High match: auto-generate
+        await generateResume({ force: true });
+      } else {
+        // Low/Moderate match: show modal to decision
+        setShowLowMatch(true);
+        setGenerating(false);
+      }
+    } catch (e) {
+      setExtractError("Match calculation failed.");
       setGenerating(false);
     }
   }
@@ -234,13 +275,12 @@ export default function ResumeBuilder() {
           </button>
         </div>
 
-        {/* Match */}
-        {matchPercent !== null && (
-          <MatchPanel
-            matchPercent={matchPercent}
-            presentKeywords={presentKeywords}
-            missingKeywords={missingKeywords}
-            note={matchNote}
+        {/* Content Analysis */}
+        {(resumeText) && (
+          <AnalysisPanel
+            analysis={analysis}
+            loading={analyzing}
+            onAnalyze={runContentAnalysis}
           />
         )}
 
@@ -263,8 +303,8 @@ export default function ResumeBuilder() {
           </div>
         </div>
 
-        {/* Warning modal */}
-        <WarningModal
+        {/* Match modal */}
+        <MatchModal
           open={showLowMatch}
           matchPercent={matchPercent ?? 0}
           onClose={() => setShowLowMatch(false)}
@@ -274,7 +314,9 @@ export default function ResumeBuilder() {
           }}
           onGoAnalyzer={() => {
             setShowLowMatch(false);
-            alert("Resume Analyzer coming soon");
+            const el = document.getElementById("resume-analyzer");
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+            runContentAnalysis();
           }}
         />
       </main>

@@ -15,25 +15,25 @@ export default function MatchModal({
         <div className="modalHeader">
           <div className="modalIcon">{isBlocked ? "❌" : "⚡"}</div>
           <div className="modalTitle">
-            {isBlocked ? "Insufficient Alignment" : "Resume Alignment"}
+            {isBlocked ? "Match Score Optimization" : "Resume Alignment"}
           </div>
         </div>
 
         <div className="modalBody">
           <div className="scoreHighlight">
-            <span className="scoreValue" style={{ 
-              background: isBlocked ? 'linear-gradient(135deg, #fff 30%, #ef4444)' : undefined,
-              webkitTextFillColor: isBlocked ? 'transparent' : undefined
+            <span className="scoreValue" style={{
+              background: isBlocked ? 'linear-gradient(135deg, #fff 30%, #fecaca)' : undefined,
+              webkitTextFillColor: isBlocked ? '#ef4444' : undefined
             }}>
               {matchPercent}%
             </span>
             <span className="scoreText">Match Score</span>
           </div>
-          
+
           <p className="modalMsg">
-            {isBlocked 
-              ? "Cannot create the resume because no significant keywords were matched. Please refine your resume or job description."
-              : `Your resume is ${matchPercent}% aligned with the job requirements.`
+            {isBlocked
+              ? "Your current resume doesn't meet the target keyword alignment (30%). Please use the Resume Analyzer to identify missing skills or update your resume for better results."
+              : `Your resume has ${matchPercent}% alignment with the job requirements.`
             }
           </p>
         </div>

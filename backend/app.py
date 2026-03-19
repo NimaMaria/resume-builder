@@ -22,7 +22,11 @@ print("✅ Running app from:", __file__)
 # ----------------------------
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-print("Loaded GROQ_API_KEY prefix:", (GROQ_API_KEY[:12] + "...") if GROQ_API_KEY else "None")
+if GROQ_API_KEY:
+    print("Loaded GROQ_API_KEY prefix:", f"{GROQ_API_KEY[:10]}...")
+else:
+    print("Loaded GROQ_API_KEY prefix: None")
+
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 TEMPLATE_PATH = os.path.join("templates", "resume_template.tex")
@@ -112,6 +116,12 @@ def latex_escape(s: str) -> str:
     return out
 
 
+def handle_bold(s: str) -> str:
+    """Converts **text** to \\textbf{text} after escaping."""
+    import re
+    return re.sub(r"\*\*(.*?)\*\*", r"\\textbf{\1}", s)
+
+
 def normalize_url(u: str) -> str:
     u = (u or "").strip()
     if not u:
@@ -156,7 +166,7 @@ def reorder_resume_json(data: dict, role_family: str) -> dict:
 # LaTeX builder
 # ----------------------------
 def make_contact_lines(contact: dict) -> str:
-    lines = []
+    parts = []
     email = (contact.get("email") or "").strip()
     phone = (contact.get("phone") or "").strip()
     linkedin = (contact.get("linkedin") or "").strip()
@@ -164,35 +174,42 @@ def make_contact_lines(contact: dict) -> str:
     portfolio = (contact.get("portfolio") or "").strip()
     location = (contact.get("location") or "").strip()
 
+    if location:
+        parts.append(handle_bold(latex_escape(location)))
+
     if email:
         safe_email = latex_escape(email)
         href_email = latex_escape_url("mailto:" + email)
-        lines.append(rf"Email: \href{{{href_email}}}{{{safe_email}}}")
+        parts.append(rf"\href{{{href_email}}}{{{safe_email}}}")
 
     if phone:
-        lines.append(f"Mobile: {latex_escape(phone)}")
+        parts.append(latex_escape(phone))
 
     if linkedin:
         url = normalize_url(linkedin)
-        lines.append(rf"LinkedIn: \href{{{latex_escape_url(url)}}}{{{latex_escape(linkedin)}}}")
+        label = linkedin.replace("https://", "").replace("www.", "").rstrip("/")
+        parts.append(rf"\href{{{latex_escape_url(url)}}}{{{latex_escape(label)}}}")
 
     if github:
         url = normalize_url(github)
-        lines.append(rf"Github: \href{{{latex_escape_url(url)}}}{{{latex_escape(github)}}}")
+        label = github.replace("https://", "").replace("www.", "").rstrip("/")
+        parts.append(rf"\href{{{latex_escape_url(url)}}}{{{latex_escape(label)}}}")
 
     if portfolio:
         url = normalize_url(portfolio)
-        lines.append(rf"Portfolio: \href{{{latex_escape_url(url)}}}{{{latex_escape(portfolio)}}}")
+        label = portfolio.replace("https://", "").replace("www.", "").rstrip("/")
+        parts.append(rf"\href{{{latex_escape_url(url)}}}{{{latex_escape(label)}}}")
 
-    if location:
-        lines.append(f"{latex_escape(location)}")
-
-    return r"\\ ".join(lines) if lines else ""
+    # Join with a bullet separator
+    separator = r" \quad \textbullet \quad "
+    return separator.join(parts) if parts else ""
 
 
 def make_paragraph(text: str) -> str:
     text = (text or "").strip()
-    return latex_escape(text) if text else ""
+    if not text:
+        return ""
+    return handle_bold(latex_escape(text))
 
 
 def make_skills_table(skills: dict) -> str:
@@ -203,15 +220,12 @@ def make_skills_table(skills: dict) -> str:
         items = [str(x).strip() for x in items if str(x).strip()]
         if not items:
             continue
-        value = latex_escape(", ".join(items))
-        rows.append(rf"\textbf{{{latex_escape(k)}:}} & {value} \\")
+        # Apply handle_bold to skills content
+        value = handle_bold(latex_escape(", ".join(items)))
+        rows.append(rf"\textbf{{{latex_escape(k)}:}} {value}")
     if not rows:
         return ""
-    return (
-        r"\begin{tabularx}{\textwidth}{@{} l X @{} }" + "\n"
-        + "\n".join(rows) + "\n"
-        + r"\end{tabularx}"
-    )
+    return "\n".join([rf"{r}\par" for r in rows])
 
 
 def make_section(title: str, body_tex: str) -> str:
@@ -220,13 +234,19 @@ def make_section(title: str, body_tex: str) -> str:
         return ""
     return rf"""
 \section{{{latex_escape(title)}}}
-\sectionrule
 {body_tex}
 """.strip()
 
 
 def make_bullets(items):
-    clean = [latex_escape(x) for x in (items or []) if str(x).strip()]
+    # We want to escape most things but allow \hfill which we might have added manually
+    def escape_if_needed(x):
+        if "\\hfill" in str(x):
+            # If it has \hfill, we assume the parts are already escaped or handled
+            return x
+        return handle_bold(latex_escape(x))
+
+    clean = [escape_if_needed(x) for x in (items or []) if str(x).strip()]
     if not clean:
         return ""
     bullets = "\n".join([rf"\item {x}" for x in clean])
@@ -240,16 +260,65 @@ def make_education_block(education_list):
         degree = latex_escape(e.get("degree", ""))
         location = latex_escape(e.get("location", ""))
         dates = latex_escape(e.get("dates", ""))
-        details = latex_escape(e.get("details", ""))
+        details = e.get("details", "")
 
         if not any([school, degree, location, dates, details]):
             continue
 
-        parts.append(rf"\resumeEntry{{{school}}}{{{location}}}")
-        parts.append(rf"\resumeSub{{{degree}}}{{{dates}}}")
+        # Extract CGPA/Grade from details if it looks like a single metric
+        right_side = ""
+        if isinstance(details, str) and details.strip() and not any(x in str(details) for x in ["\n", "•", "*"]):
+            upper_details = details.upper()
+            if "CGPA" in upper_details or "%" in upper_details or "PERCENT" in upper_details or "SCORE" in upper_details:
+                right_side = latex_escape(details.strip())
+                details = ""
+
+        # Line 1: Institution: (Dates) \hfill Grade
+        label = school
+        if dates:
+            label = rf"{school}: ({dates})"
+        
+        parts.append(rf"\resumeEntry{{{label}}}{{{right_side}}}")
+        
+        # Line 2: Degree (Italics)
+        if degree:
+            parts.append(rf"{{\textit{{{degree}}}}}\par")
+            if details:
+                parts.append(r"\vspace{2pt}")
+
+        # Line 3+: Details (Bullets, e.g., for School Grades)
         if details:
-            parts.append(rf"{{\small {details}}}")
-        parts.append(r"\vspace{6pt}")
+            items = []
+            if isinstance(details, list):
+                items = [str(x) for x in details if x]
+            elif isinstance(details, str) and details.strip():
+                # Split and listify
+                items = [re.sub(r"^[•\*\-\s]+", "", x).strip() for x in re.split(r"[\n•\*]+", details) if x.strip()]
+
+            if items:
+                formatted_items = []
+                for item in items:
+                    item_str = str(item)
+                    # Delimiters: ':' or ' - ' or '--' or '  '
+                    delim = None
+                    if ":" in item_str: delim = ":"
+                    elif " - " in item_str: delim = " - "
+                    elif " -- " in item_str: delim = " -- "
+                    elif "  " in item_str: delim = "  "
+                    
+                    if delim:
+                        p = item_str.split(delim, 1)
+                        # Escape BEFORE join
+                        l = latex_escape(p[0].strip())
+                        r = latex_escape(p[1].strip())
+                        # Auto-bold board names in parentheses, e.g. (ISC)
+                        l = re.sub(r"(\(.*?\))", r"\\textbf{\1}", l)
+                        formatted_items.append(rf"{l} \hfill {r}")
+                    else:
+                        formatted_items.append(latex_escape(item_str))
+                parts.append(make_bullets(formatted_items))
+
+        parts.append(r"\vspace{4pt}")
 
     return "\n".join(parts)
 
@@ -258,7 +327,7 @@ def make_experience_block(exps):
     parts = []
     for x in (exps or []):
         company = latex_escape(x.get("company", ""))
-        title = latex_escape(x.get("title", ""))
+        title = handle_bold(latex_escape(x.get("title", "")))
         location = latex_escape(x.get("location", ""))
         dates = latex_escape(x.get("dates", ""))
 
@@ -280,8 +349,8 @@ def make_projects_block(projs):
     parts = []
     for p in (projs or []):
         name = latex_escape(p.get("name", ""))
-        desc = latex_escape(p.get("desc", ""))
-        tech = latex_escape(p.get("tech", ""))
+        desc = handle_bold(latex_escape(p.get("desc", "")))
+        tech = handle_bold(latex_escape(p.get("tech", "")))
 
         bullets = make_bullets(p.get("bullets", []))
 
@@ -322,32 +391,75 @@ def fill_latex_template(data: dict) -> str:
     with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
         template = f.read()
 
+    # Header Data
     name = latex_escape(data.get("name", "YOUR NAME"))
-    contact_lines = make_contact_lines(data.get("contact", {}))
+    
+    contact = data.get("contact", {})
+    header_vals = []
+    if contact.get("phone"): header_vals.append(rf"\faPhone\ {latex_escape(contact['phone'])}")
+    if contact.get("email"): header_vals.append(rf"\faEnvelope\ {latex_escape(contact['email'])}")
+    if contact.get("linkedin"):
+        li = str(contact["linkedin"]).split("/")[-1].strip("/")
+        header_vals.append(rf"\faLinkedin\ {latex_escape(li)}")
+    if contact.get("github"):
+        gh = str(contact["github"]).split("/")[-1].strip("/")
+        header_vals.append(rf"\faGithub\ {latex_escape(gh)}")
+    if contact.get("location"): header_vals.append(rf"\faMapMarker*\ {latex_escape(contact['location'])}")
+    
+    contact_line = " \\enspace | \\enspace ".join(header_vals)
 
-    summary_text = make_paragraph(data.get("summary", ""))
-    summary_section = make_section("SUMMARY", summary_text)
+    # --- Build Single Column Body ---
+    body_parts = []
+    
+    # Summary
+    summary = data.get("summary", "")
+    if summary:
+        body_parts.append(r"\section*{SUMMARY}")
+        body_parts.append(latex_escape(summary))
 
-    edu_block = make_education_block(data.get("education", []))
-    skills_table = make_skills_table(data.get("skills", {}))
+    # Experience
     exp_block = make_experience_block(data.get("experience", []))
+    if exp_block:
+        body_parts.append(r"\section*{EXPERIENCE}")
+        body_parts.append(exp_block)
+
+    # Projects
     proj_block = make_projects_block(data.get("projects", []))
-    extra_block = make_extra_sections(data.get("extra_sections", []))
+    if proj_block:
+        body_parts.append(r"\section*{PROJECTS}")
+        body_parts.append(proj_block)
 
-    edu_section = make_section("EDUCATION", edu_block)
-    skills_section = make_section("SKILLS SUMMARY", skills_table)
-    exp_section = make_section("EXPERIENCE", exp_block)
-    proj_section = make_section("PROJECTS", proj_block)
+    # Education
+    edu_block = make_education_block(data.get("education", []))
+    if edu_block:
+        body_parts.append(r"\section*{EDUCATION}")
+        body_parts.append(edu_block)
 
+    # Skills
+    skills_table = make_skills_table(data.get("skills", {}))
+    if skills_table:
+        body_parts.append(r"\section*{SKILLS}")
+        body_parts.append(skills_table)
+
+    # Extras
+    extras = data.get("extra_sections", [])
+    if isinstance(extras, list):
+        for sec in extras:
+            # Escape the title as it may contain '&' (e.g., ACHIEVEMENTS & CERTIFICATIONS)
+            t = latex_escape((sec.get("title") or "").upper())
+            items = [str(x) for x in (sec.get("items") or []) if x]
+            if not items: continue
+            
+            body_parts.append(rf"\section*{{{t}}}")
+            body_parts.append(make_bullets(items))
+
+    body_content = "\n\n".join(body_parts)
+
+    # Fill final template
     out = template
     out = out.replace("<<NAME>>", name)
-    out = out.replace("<<CONTACT_LINES>>", contact_lines)
-    out = out.replace("<<SUMMARY_SECTION>>", summary_section)
-    out = out.replace("<<EDU_SECTION>>", edu_section)
-    out = out.replace("<<SKILLS_SECTION>>", skills_section)
-    out = out.replace("<<EXP_SECTION>>", exp_section)
-    out = out.replace("<<PROJ_SECTION>>", proj_section)
-    out = out.replace("<<EXTRA_SECTIONS>>", extra_block)
+    out = out.replace("<<CONTACT_LINE>>", contact_line)
+    out = out.replace("<<BODY>>", body_content)
 
     return out
 
@@ -361,22 +473,28 @@ def compile_latex_to_pdf_pdflatex(latex: str) -> str:
         )
 
     workdir = tempfile.mkdtemp(prefix="latex_")
-    tex_path = os.path.join(workdir, "resume.tex")
+    import time
+    job_id = int(time.time() * 1000)
+    tex_filename = f"resume_{job_id}.tex"
+    tex_path = os.path.join(workdir, tex_filename)
 
     with open(tex_path, "w", encoding="utf-8") as f:
         f.write(latex)
 
-    cmd = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "resume.tex"]
+    cmd = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", tex_filename]
 
     run1 = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if run1.returncode != 0:
-        raise RuntimeError("pdflatex failed:\n" + run1.stdout[-2000:])
+        stdout_msg = run1.stdout or ""
+        raise RuntimeError("pdflatex failed:\n" + stdout_msg[-2000:])
 
     run2 = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if run2.returncode != 0:
-        raise RuntimeError("pdflatex failed (2nd run):\n" + run2.stdout[-2000:])
+        stdout_msg = run2.stdout or ""
+        raise RuntimeError("pdflatex failed (2nd run):\n" + stdout_msg[-2000:])
 
-    pdf_path = os.path.join(workdir, "resume.pdf")
+    pdf_filename = f"resume_{job_id}.pdf"
+    pdf_path = os.path.join(workdir, pdf_filename)
     if not os.path.exists(pdf_path):
         raise RuntimeError("PDF not produced.")
 
@@ -399,66 +517,33 @@ def groq_generate_resume_json(resume_text: str, job_text: str) -> dict:
     # 4. Rewrite the summary to highlight qualifications for THIS SPECIFIC JOB
     # The key is that the output must VISIBLY DIFFER for different jobs.
     system_msg = (
-        "You are an elite resume parser and job-tailoring expert. Your mission is to create \n"
-        "powerful, ATS-optimized, and recruiter-friendly resumes that VISIBLY emphasize \n"
-        "job fit for each specific role.\n\n"
-        "YOUR TASK:\n"
-        "1. Parse the resume into structured JSON.\n"
-        "2. IDENTIFY job-critical skills/techs/methodologies from JOB_TEXT.\n"
-        "3. CRAFT POWERFUL SUMMARY: Write a compelling 2-3 sentence professional hook that:\n"
-        "   - Immediately shows alignment with the specific job role\n"
-        "   - Uses industry-relevant Keywords from the job description\n"
-        "   - Highlights unique value proposition for THIS JOB\n"
-        "   - Backend: Server architecture, database optimization, API design, scalability\n"
-        "   - Frontend: Component architecture, UX/UI excellence, responsive design, performance\n"
-        "   - Full-Stack: End-to-end ownership, full tech stack proficiency\n"
-        "   - Data: Analytics, ML/AI models, data pipelines, insights generation\n"
-        "   - DevOps: Infrastructure, CI/CD, monitoring, automation\n"
-        "4. REORDER experience: Most relevant role first, then by job-fit relevance.\n"
-        "5. REORDER bullets: Highlight achievements matching job requirements at TOP.\n"
-        "6. REORDER projects: Feature projects most relevant to job FIRST.\n"
-        "7. REORDER skills: Put job-critical skills at TOP of each category.\n"
-        "8. ENHANCE visibility: Make bullets action-oriented with quantified results.\n\n"
-        "CRITICALITY:\n"
-        "- Summary MUST be noticeably different and more powerful for different jobs.\n"
-        "- Reorder experience/projects/skills visibly for each job.\n"
-        "- Do NOT return the same resume for different job inputs.\n"
-        "- Use ONLY resume facts; do NOT invent achievements.\n"
-        "- Prioritize IMPACT and RELEVANCE.\n\n"
-        "Output STRICT JSON only.\n"
+        "You are an Elite Resume Architect & Professional Editor. Your mission is to produce a flawless, tailored resume in valid JSON.\n\n"
+        "STRICT CONTENT RULES:\n"
+        "1. **ZERO TOLERANCE FOR REPETITION**: You MUST NOT repeat any action verb. Each bullet point across the entire resume must start with a unique, high-impact verb. If you use 'Engineered', you cannot use it again anywhere. Use 'Architected', 'Spearheaded', 'Optimized', 'Pioneered', 'Scalability-focused', etc.\n"
+        "2. **QUANTIFIABLE METRICS (MANDATORY)**: EVERY single bullet point in 'experience' and 'projects' MUST include a specific, hard number (e.g., 20%, $50k, 500+ users, 30 ms). If the input text lacks numbers, generate a realistic, conservative estimation based on standard industry metrics for the role. NEVER use vague terms like 'improved performance'; use 'improved performance by 35%'.\n"
+        "3. **PHRASE DIVERSITY**: Do NOT repeat multi-word phrases. If you use 'scaled distributed systems' in one bullet, do not use it again. Constantly vary your descriptive language.\n"
+        "4. **BUZZWORD & JARGON BAN**: Strictly avoid vague, overused clichés. Prohibited terms include: 'results-oriented', 'team player', 'passionate', 'self-starter', 'thought leader', 'synergy', 'dynamic', 'expert', 'best-in-class', 'detail-oriented', 'hardworking', 'proven track record', 'highly skilled'. Replace these with concrete evidence.\n"
+        "5. **SEMANTIC DIVERSITY**: Do not repeat technical tools in every bullet point. If 'React' is in the skills section, only mention it in experience if you are describing a *specific* high-impact implementation. Avoid 'Used React to build X' repeatedly.\n"
+        "6. **ULTRA-STRICT BOLDING**: Do NOT bold any text in bullet points. Use plain text everywhere except section headers and institution/role names defined in the schema logic.\n"
+        "7. **EDUCATION STRUCTURE (CRITICAL)**: For university, college, and high schools: map the institution name to 'school' and the degree title to 'degree'. For grades (CGPA/Percentage), place them in the 'details' field.\n"
+        "8. **NO FILLER**: Avoid generic summaries. Focus on specific impact for the target JOB_TEXT. Every sentence must add new information.\n"
+        "9. **FLAWLESS PROOFREADING**: Catch every single spelling and grammar mistake. Use professional US English.\n"
+        "10. **JSON INTEGRITY**: Return valid JSON. Do NOT include LaTeX backslashes or commands like \\hfill or \\textbf in the values.\n"
+        "11. **RICH EXTRA SECTIONS**: If the candidate has Certifications, Achievements, or relevant Awards, put them in 'extra_sections' with appropriate titles ('CERTIFICATIONS', 'ACHIEVEMENTS').\n"
+        "Produce ONLY valid JSON according to the schema."
     )
 
     user_msg = f"""
 RESUME_TEXT:
 {resume_text}
-
-JOB_TEXT (role/description to tailor for):
+JOB_TEXT (tailor for):
 {job_text}
 
-TASK:
-1. Parse resume into the JSON schema
-2. PRIORITIZE job relevance in reordering:
-   - Experience: Put role MOST ALIGNED to '{job_text}' FIRST
-   - Bullets: Put achievements matching job requirements at TOP of each role
-   - Projects: Rank by relevance to job requirements FIRST
-   - Skills: List job-critical technical skills and categories at TOP
-3. CRAFT powerful summary (2-3 sentences) that:
-   - Opens with direct alignment to the job role
-   - Incorporates key Terms/skills from job description
-   - Highlights relevant achievements and expertise
-   - Demonstrates value proposition for THIS JOB
-   - Uses strong, action-oriented language
-   - For Backend: emphasize API design, database, scalability, server architecture
-   - For Frontend: emphasize UI/UX, React/Vue/Angular, responsive design, performance
-   - For Full Stack: emphasize end-to-end development, full tech stack
-   - For Data/ML: emphasize models, analytics, data pipelines, insights
-   - For DevOps: emphasize infrastructure, CI/CD, monitoring, reliability
-
-CRITICAL EXAMPLES: 
-- Resume has: "Built React components, designed RESTful APIs, optimized database queries"
-- For "Frontend Developer": summary highlights React expertise, component architecture, responsive UI
-- For "Backend Developer": summary emphasizes API design, database optimization, scalability
-- DIFFERENT JOBS must produce VISIBLY DIFFERENT reordering and summary
+1. Create an elite, highly-tailored resume in JSON format.
+2. SUMMARY: Craft a compelling 3-4 sentence professional summary. It MUST start with a strong hook, lead into specific high-impact achievements (use metrics like %, $), and explicitly state how the candidate's unique background solves the specific problems mentioned in the JOB_TEXT. Avoid generic filler.
+3. EXPERIENCE: Rewrite experience bullets using the 'Action Verb + Task + Result' formula. Ensure zero repetition of action verbs.
+4. FLAWLESS POLISH: Ensure 100% correct grammar, professional vocabulary, and perfect spelling.
+5. REORDER: Lead with the most relevant experience and projects for THIS job.
 
 Schema:
 {{
@@ -469,20 +554,15 @@ Schema:
   "skills":{{"Languages":[],"Frameworks":[],"Tools":[],"Platforms":[],"Soft Skills":[]}},
   "experience":[{{"company":"","title":"","location":"","dates":"","bullets":[]}}],
   "projects":[{{"name":"","desc":"","tech":"","bullets":[]}}],
-  "extra_sections":[{{"title":"","items":[]}}],
-  "job_keywords": [],
-  "expanded_job_text": ""
+  "extra_sections":[{{"title":"","items":[]}}]
 }}
 
-EMIT job_keywords: technical skills/terms from JOB_TEXT that appear in resume
-EMIT expanded_job_text: if job was short title, expand it to 1-2 sentences; else echo it back
-
-Return ONLY JSON with no explanation.
+Return ONLY JSON.
 """.strip()
 
     resp = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        temperature=0.4,
+        temperature=0.0,
         max_tokens=3500,
         messages=[
             {"role": "system", "content": system_msg},
@@ -492,14 +572,37 @@ Return ONLY JSON with no explanation.
 
     content = (resp.choices[0].message.content or "").strip()
 
+    # Clean up common invalid JSON escapes returned by some LLMs (e.g. \$ or \%)
+    content_clean = (content
+        .replace(r"\$", "$")
+        .replace(r"\%", "%")
+        .replace(r"\&", "&")
+        .replace(r"\_", "_")
+        .replace(r"\#", "#")
+        .replace(r"\{", "{")
+        .replace(r"\}", "}")
+    )
+
     try:
-        return json.loads(content)
+        return json.loads(content_clean)
     except Exception:
-        start = content.find("{")
-        end = content.rfind("}")
+        # Fallback: extract JSON from larger text output
+        start = content_clean.find("{")
+        end = content_clean.rfind("}")
         if start == -1 or end == -1:
+            print("--- INVALID PAYLOAD ---")
+            print(content)
+            print("--- END ---")
             raise RuntimeError("Groq did not return JSON.")
-        return json.loads(content[start:end + 1])
+        json_str = content_clean[start : end + 1]
+        try:
+            return json.loads(json_str)
+        except Exception as e:
+            print("--- JSON ERROR ---")
+            print(json_str)
+            print("Error details:", str(e))
+            print("--- END ---")
+            raise e
 
 
 # ----------------------------
@@ -532,20 +635,12 @@ def api_generate_pdf():
         # no-op; the model already ordered everything
         resume_json = reorder_resume_json(resume_json, "")
 
-        # pull metadata that the prompt may have added
-        expanded = resume_json.pop("expanded_job_text", "")
-        kw = resume_json.pop("job_keywords", [])
-
         latex = fill_latex_template(resume_json)
         compile_latex_to_pdf_pdflatex(latex)
 
         pdf_url = request.host_url.rstrip("/") + "/api/latest-pdf"
 
         resp = {"pdf_url": pdf_url, "job_mode": job_mode}
-        if expanded:
-            resp["expanded_job_text"] = expanded
-        if isinstance(kw, list):
-            resp["job_keywords"] = kw
         return jsonify(resp)
     except Exception as e:
         return jsonify({"error": f"PDF generation failed: {str(e)}"}), 500
@@ -588,24 +683,18 @@ def api_expand_job():
 
     # ask the model to expand and extract keywords and score match
     system_msg = (
-        "You are a job requirements analyzer.\n"
-        "Given a job title or description and the applicant's resume text,\n"
-        "perform the following steps carefully:\n"
-        "1. Expand a terse title to a fuller, human‑readable description if the\n"
-        "   input looks like a short role name.\n"
-        "2. Identify the core skills, technologies, tools, and soft‑skills that the\n"
-        "   job text is asking for. Include synonyms or paraphrases when the\n        meaning is the same (e.g. \"UI\" and \"user interface\").\n"
-        "3. Examine RESUME_TEXT and determine which of those keywords are\n        actually present or clearly implied in the candidate's experience.\n"
-        "   Matching should be semantic, not just literal substring search.\n"
-        "4. Compute match_percent as (#present_keywords / #job_keywords) * 100,\n"
-        "   rounded to the nearest integer.\n"
-        "5. Return arrays present_keywords and missing_keywords accordingly.\n\n"
-        "Example expectation:\n"
-        "JOB_TEXT: Frontend Developer\n"
-        "RESUME_TEXT mentions \"built React components and improved UX\"\n"
-        "-> job_keywords might include [\"react\", \"components\", \"ux\"]\n"
-        "   present_keywords should list all three and match_percent 100.\n\n"
-        "Always output STRICT JSON only, with no extra text or explanation."
+        "You are a generous, industry-aware Job Matching Expert.\n"
+        "Your goal is to evaluate the match between a job and a resume with 'MERCY' and semantic insight.\n\n"
+        "SCORING RULES:\n"
+        "1. **SEMANTIC MATCHING (SHOW MERCY)**: Do not look for exact keyword matches. If a candidate uses a related word, a synonym, or demonstrates a concept that implies the skill, count it as PRESENT. Examples:\n"
+        "   - 'Redux' or 'Provider' => Match for 'State Management'\n"
+        "   - 'REST' or 'GraphQL' => Match for 'APIs'\n"
+        "   - 'Vite' or 'Webpack' => Match for 'Build Tools'\n"
+        "   - 'Clean Architecture' or 'SOLID' => Match for 'Software Design'\n"
+        "2. **INCLUSIVE SKILL EXTRACTION**: Extract core high-level skills from the JOB_TEXT. Don't be pedantic about versions or minor tools.\n"
+        "3. **RESUME QUALITY**: Be encouraging. If the resume is professional and readable, give a high quality score.\n"
+        "4. **CALCULATION**: Match Percent = (#present / #total_job_keywords) * 100. Be generous with rounding.\n\n"
+        "Output ONLY valid JSON."
     )
 
     user_msg = f"""
@@ -622,31 +711,42 @@ Return JSON with these fields:
   "job_keywords": ["skill1","skill2",...],
   "present_keywords": ["skillA","skillB",...],
   "missing_keywords": ["skillX","skillY",...],
-  "match_percent": 0  # integer 0-100
+  "match_percent": 0,  # integer 0-100
+  "resume_quality_score": 0  # integer 0-100
 }}
 
-- job_keywords should list important skills/terms from JOB_TEXT.
-- present_keywords should be job_keywords that appear (or are clearly implied) in RESUME_TEXT.
-- missing_keywords should be the remainder.
-- match_percent should be (#present / #job)*100, rounded to nearest integer.
+- job_keywords: important skills/terms from JOB_TEXT.
+- present_keywords: job_keywords that appear (or are clearly implied) in RESUME_TEXT.
+- missing_keywords: the remainder.
+- match_percent: (#present / #job)*100.
+- resume_quality_score: Based on grammar, vocabulary variety (no repetition), and polish.
 
 Return ONLY valid JSON.
 """.strip()
 
-    resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        temperature=0.4,
-        max_tokens=800,
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
-    )
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.0,
+            max_tokens=800,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "billing" in error_msg.lower() or "quota" in error_msg.lower():
+            return jsonify({
+                "error": "Groq API quota exceeded or billing issue. Please check https://console.groq.com/settings/billing"
+            }), 503
+        return jsonify({"error": f"LLM Match Score Engine Error: {error_msg}"}), 500
     content = (resp.choices[0].message.content or "").strip()
     try:
         result = json.loads(content)
         # debug output for developers
-        print("[expand-job] job_text=", job_text[:80], "match_percent=", result.get("match_percent"))
+        job_log = job_text[:80] if job_text else ""
+        print("[expand-job] job_text=", job_log, "match_percent=", result.get("match_percent"))
         return jsonify(result)
     except Exception:
         # attempt to salvage JSON from text
@@ -655,9 +755,77 @@ Return ONLY valid JSON.
         if start == -1 or end == -1:
             return jsonify({"error": "Invalid response from LLM"}), 500
         parsed = json.loads(content[start:end + 1])
-        print("[expand-job] parsed fallback, job_text=", job_text[:80])
+        job_log = job_text[:80] if job_text else ""
+        print("[expand-job] parsed fallback, job_text=", job_log)
         return jsonify(parsed)
 
+@app.post("/api/analyze-resume")
+def api_analyze_resume():
+    """
+    Accepts { resumeText: string, jobText: string } and returns detailed
+    content analysis: score, repetition, weak_verbs, grammar, impact.
+    """
+    if not client:
+        return jsonify({"error": "GROQ_API_KEY not found."}), 500
+
+    data = request.get_json(silent=True) or {}
+    resume_text = (data.get("resumeText") or "").strip()
+    job_text = (data.get("jobText") or "").strip()
+
+    if not resume_text:
+        return jsonify({"error": "resumeText is empty"}), 400
+
+    system_msg = (
+        "You are a Senior Strategic Career Consultant and Resume Expert.\n"
+        "Your task is to provide a deep-dive analysis of a resume's content quality.\n"
+        "Be constructive, specific, and focus on high-impact improvements.\n"
+        "Return STRICT JSON only."
+    )
+
+    user_msg = f"""
+    Evaluate the following resume against the target job requirements:
+    RESUME: {resume_text}
+    TARGET JOB: {job_text}
+
+    Analyze the following criteria:
+    1. Score (0-100): An overall professional index based on completeness, impact, and relevance.
+    2. Repetition: Identify overused words, techniques, or phrases.
+    3. Weak_verbs: Find passive or generic verbs and suggest dynamic alternatives.
+    4. Grammar: List specific syntax, spelling, or punctuation errors.
+    5. Impact: Provide actionable advice on how to quantify achievements and improve the 'hook' for this specific role.
+
+    Return JSON format:
+    {{
+      "score": 0-100,
+      "repetition": [],
+      "weak_verbs": [],
+      "grammar": [],
+      "impact": []
+    }}
+    """
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.0,
+            max_tokens=1500,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        # Fix: correctly extract content from response
+        raw_content = resp.choices[0].message.content or ""
+        content_str = str(raw_content).strip()
+        start = content_str.find("{")
+        end = content_str.rfind("}")
+        
+        if start != -1 and end != -1:
+            json_str = content_str[start : end + 1]
+            return jsonify(json.loads(json_str))
+        
+        return jsonify({"error": "No JSON found in response"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.get("/api/latest-pdf")
 def api_latest_pdf():
