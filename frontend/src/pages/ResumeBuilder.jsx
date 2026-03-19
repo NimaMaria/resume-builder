@@ -3,6 +3,8 @@ import UploadBox from "../components/UploadBox";
 import JobInput from "../components/JobInput";
 import MatchModal from "../components/WarningModal";
 import PdfPreview from "../components/PdfPreview";
+import ResumeEditor from "../components/ResumeEditor";
+
 
 const API = "http://127.0.0.1:5000";
 
@@ -27,6 +29,12 @@ export default function ResumeBuilder() {
   // Generate state
   const [generating, setGenerating] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
+
+  // Editor State
+  const [resumeData, setResumeData] = useState(null);
+  const [parsing, setParsing] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+
 
   const jobText = useMemo(() => {
     return jobMode === "title" ? jobTitle.trim() : jobDesc.trim();
@@ -76,6 +84,7 @@ export default function ResumeBuilder() {
 
       setResumeText(text);
       setIsScanned(scanned);
+      setResumeData(null); // Clear previous structured data
 
       if (scanned) {
         setExtractError(
@@ -88,6 +97,28 @@ export default function ResumeBuilder() {
       setExtracting(false);
     }
   }
+
+  async function parseResume() {
+    if (!resumeText || !jobText) return;
+    setParsing(true);
+    try {
+      const res = await fetch(`${API}/api/parse-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resumeText, jobText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Parsing failed");
+      setResumeData(data);
+      setIsEditing(true);
+    } catch (e) {
+      console.error("Parse error:", e);
+      setExtractError("Failed to prepare editor. Check your connection.");
+    } finally {
+      setParsing(false);
+    }
+  }
+
 
   async function runMatch() {
     if (!resumeText || !jobText) return 0;
@@ -124,8 +155,9 @@ export default function ResumeBuilder() {
         const res = await fetch(`${API}/api/generate-pdf`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ resumeText, jobText }),
+          body: JSON.stringify({ resumeText, jobText, resumeData: resumeData }),
         });
+
 
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -216,8 +248,8 @@ export default function ResumeBuilder() {
           />
         </div>
 
-        {/* Generate */}
-        <div className="generateWrap">
+        {/* Generate & Edit */}
+        <div className="generateWrap" style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
           <button
             className={`btn primary big ${!canGenerate ? "disabledBlur" : ""}`}
             disabled={!canGenerate}
@@ -225,7 +257,19 @@ export default function ResumeBuilder() {
           >
             {generating ? "Generating..." : "Generate PDF Resume"}
           </button>
+
+          <button
+            className={`btn secondary big ${!canGenerate || parsing ? "disabledBlur" : ""}`}
+            disabled={!canGenerate || parsing}
+            onClick={() => {
+              if (resumeData) setIsEditing(true);
+              else parseResume();
+            }}
+          >
+            {parsing ? "Preparing Editor..." : "Review & Edit Content"}
+          </button>
         </div>
+
 
         {/* Preview (PDF) */}
         <div className="card">
@@ -242,6 +286,21 @@ export default function ResumeBuilder() {
             </button>
           </div>
         </div>
+
+        {/* Resume Editor modal */}
+        {isEditing && resumeData && (
+          <ResumeEditor
+            data={resumeData}
+            jobContext={jobText}
+            onSave={(newData) => {
+              setResumeData(newData);
+              setIsEditing(false);
+              generateResume({ force: true }); // Auto-generate PDF after edit
+            }}
+            onCancel={() => setIsEditing(false)}
+          />
+        )}
+
 
         {/* Match modal */}
         <MatchModal

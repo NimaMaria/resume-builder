@@ -349,15 +349,23 @@ def make_projects_block(projs):
     parts = []
     for p in (projs or []):
         name = latex_escape(p.get("name", ""))
+        link = normalize_url((p.get("link") or "").strip())
         desc = handle_bold(latex_escape(p.get("desc", "")))
         tech = handle_bold(latex_escape(p.get("tech", "")))
 
         bullets = make_bullets(p.get("bullets", []))
 
-        if not any([name, desc, tech, bullets]):
+        if not any([name, desc, tech, bullets, link]):
             continue
 
-        parts.append(rf"\resumeEntry{{{name}}}{{}}")
+        # Header with link if present
+        if link:
+            # We want the link to be clickable but maybe show a nice name
+            safe_link = latex_escape_url(link)
+            parts.append(rf"\resumeEntry{{\href{{{safe_link}}}{{{name} \externalLink}}}}{{}}")
+        else:
+            parts.append(rf"\resumeEntry{{{name}}}{{}}")
+
         if desc:
             parts.append(rf"{{\small {desc}}}")
         if tech:
@@ -507,8 +515,10 @@ def compile_latex_to_pdf_pdflatex(latex: str) -> str:
 # (ONLY ONE LLM CALL PER GENERATION)
 # ----------------------------
 def groq_generate_resume_json(resume_text: str, job_text: str) -> dict:
+    print(f"--- [groq_generate_resume_json] Input lengths: resume={len(resume_text)}, job={len(job_text)}")
     if not client:
         raise RuntimeError("GROQ_API_KEY not found. Set it in backend/.env")
+
 
     # The model now acts as both parser and resume editor. It should:
     # 1. Parse the resume into structured JSON
@@ -530,7 +540,9 @@ def groq_generate_resume_json(resume_text: str, job_text: str) -> dict:
         "9. **FLAWLESS PROOFREADING**: Catch every single spelling and grammar mistake. Use professional US English.\n"
         "10. **JSON INTEGRITY**: Return valid JSON. Do NOT include LaTeX backslashes or commands like \\hfill or \\textbf in the values.\n"
         "11. **RICH EXTRA SECTIONS**: If the candidate has Certifications, Achievements, or relevant Awards, put them in 'extra_sections' with appropriate titles ('CERTIFICATIONS', 'ACHIEVEMENTS').\n"
+        "12. **PROJECT LINKS**: If a project has a link (GitHub, Live Demo), extract it to the 'link' field.\n"
         "Produce ONLY valid JSON according to the schema."
+
     )
 
     user_msg = f"""
@@ -553,7 +565,8 @@ Schema:
   "education": [{{"school":"","degree":"","dates":"","location":"","details":""}}],
   "skills":{{"Languages":[],"Frameworks":[],"Tools":[],"Platforms":[],"Soft Skills":[]}},
   "experience":[{{"company":"","title":"","location":"","dates":"","bullets":[]}}],
-  "projects":[{{"name":"","desc":"","tech":"","bullets":[]}}],
+  "projects":[{{"name":"","desc":"","tech":"","link":"","bullets":[]}}],
+
   "extra_sections":[{{"title":"","items":[]}}]
 }}
 
@@ -584,9 +597,12 @@ Return ONLY JSON.
     )
 
     try:
+        print(f"--- [groq_generate_resume_json] Attempting JSON parse...")
         return json.loads(content_clean)
-    except Exception:
+    except Exception as e:
+        print(f"--- [groq_generate_resume_json] Standard JSON parse failed: {str(e)}")
         # Fallback: extract JSON from larger text output
+
         start = content_clean.find("{")
         end = content_clean.rfind("}")
         if start == -1 or end == -1:
@@ -611,30 +627,34 @@ Return ONLY JSON.
 @app.post("/api/generate-pdf")
 def api_generate_pdf():
     """
-    Input JSON: { "resumeText": "...", "jobText": "..." }
-    Output JSON: { "pdf_url": "...", "job_mode": "title|desc", "expanded_job_text": "...", "job_keywords": [...] }
+    Input JSON: { "resumeText": "...", "jobText": "...", "resumeData": {...} }
+    Output JSON: { "pdf_url": "...", "job_mode": "title|desc" }
     """
     if not client:
         return jsonify({"error": "GROQ_API_KEY not found. Set it in backend/.env"}), 500
 
     data = request.get_json(silent=True) or {}
-    resume_text = normalize_text((data.get("resumeText") or "").strip())
-    job_text_raw = (data.get("jobText") or "").strip()
+    resume_json = data.get("resumeData")
 
-    if not resume_text:
-        return jsonify({"error": "resumeText is empty"}), 400
-    if not job_text_raw:
-        return jsonify({"error": "jobText is empty"}), 400
+    if not resume_json:
+        # Fallback to the one-shot extraction flow if no structured data provided
+        resume_text = normalize_text((data.get("resumeText") or "").strip())
+        job_text_raw = (data.get("jobText") or "").strip()
 
-    job_mode = "title" if looks_like_job_title(job_text_raw) else "desc"
-    effective_job_text = normalize_text(job_text_raw)
+        if not resume_text:
+            return jsonify({"error": "resumeText is empty"}), 400
+        if not job_text_raw:
+            return jsonify({"error": "jobText is empty"}), 400
+
+        effective_job_text = normalize_text(job_text_raw)
+        try:
+            resume_json = groq_generate_resume_json(resume_text, effective_job_text)
+        except Exception as e:
+            return jsonify({"error": f"LLM parsing failed: {str(e)}"}), 500
+    
+    job_mode = data.get("job_mode") or "desc"
 
     try:
-        resume_json = groq_generate_resume_json(resume_text, effective_job_text)
-
-        # no-op; the model already ordered everything
-        resume_json = reorder_resume_json(resume_json, "")
-
         latex = fill_latex_template(resume_json)
         compile_latex_to_pdf_pdflatex(latex)
 
@@ -643,7 +663,82 @@ def api_generate_pdf():
         resp = {"pdf_url": pdf_url, "job_mode": job_mode}
         return jsonify(resp)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": f"PDF generation failed: {str(e)}"}), 500
+
+
+
+@app.post("/api/parse-resume")
+def api_parse_resume():
+    """
+    Converts raw resume text and job description into structured JSON.
+    """
+    if not client:
+        return jsonify({"error": "GROQ_API_KEY not found."}), 500
+
+    data = request.get_json(silent=True) or {}
+    resume_text = normalize_text((data.get("resumeText") or "").strip())
+    job_text = normalize_text((data.get("jobText") or "").strip())
+
+    if not resume_text:
+        return jsonify({"error": "resumeText is empty"}), 400
+
+    try:
+        resume_json = groq_generate_resume_json(resume_text, job_text)
+        return jsonify(resume_json)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/ai-edit")
+def api_ai_edit():
+    """
+    Rewrites a specific resume section/sentence based on an instruction.
+    """
+    if not client:
+        return jsonify({"error": "GROQ_API_KEY not found."}), 500
+
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    instruction = (data.get("instruction") or "").strip()
+    job_context = (data.get("jobContext") or "").strip()
+
+    if not text:
+        return jsonify({"error": "text is empty"}), 400
+
+    system_msg = (
+        "You are a Senior Career Coach and Expert Editor.\n"
+        "Your goal is to rewrite the provided resume content to make it HIGHER IMPACT and precisely tailored.\n"
+        "Rules:\n"
+        "1. Follow the instruction EXACTLY.\n"
+        "2. Keep the length similar unless the instruction says otherwise.\n"
+        "3. Use active, punchy verbs.\n"
+        "4. Fix any grammar or spelling.\n"
+        "5. Output ONLY the rewritten text. NO preamble like 'Here is the edited text:'."
+    )
+    user_msg = f"""
+CONTENT TO EDIT: {text}
+INSTRUCTION: {instruction}
+JOB CONTEXT: {job_context} (use this to tailor keywords)
+
+Provide the rewritten content:
+""".strip()
+
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.0,
+            max_tokens=1000,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        return jsonify({"editedText": (resp.choices[0].message.content or "").strip()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.post("/api/expand-job")
