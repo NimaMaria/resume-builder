@@ -927,10 +927,13 @@ def api_latest_pdf():
     if not os.path.exists(LATEST_PDF):
         return jsonify({"error": "No PDF generated yet"}), 404
 
+    # If ?download=1 is passed, force download
+    should_download = request.args.get("download") == "1"
+
     return send_file(
         LATEST_PDF,
         mimetype="application/pdf",
-        as_attachment=False,
+        as_attachment=should_download,
         download_name="resume.pdf"
     )
 
