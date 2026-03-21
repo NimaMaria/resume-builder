@@ -204,7 +204,9 @@ export default function ResumeBuilder() {
   function downloadPDF() {
     if (!pdfUrl) return;
     const a = document.createElement("a");
-    a.href = pdfUrl;
+    // Force download by adding query param
+    const downloadUrl = pdfUrl.includes("?") ? `${pdfUrl}&download=1` : `${pdfUrl}?download=1`;
+    a.href = downloadUrl;
     a.download = "resume.pdf";
     document.body.appendChild(a);
     a.click();
